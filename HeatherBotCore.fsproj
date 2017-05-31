@@ -1,0 +1,20 @@
+﻿<Project Sdk="FSharp.NET.Sdk;Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netcoreapp1.1</TargetFramework>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+
+    <Compile Include="Program.fs" />
+    <None Include="config.json" CopyToPublishDirectory="Always" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Amazon.Lambda.Core" Version="1.0.0" />
+    <PackageReference Include="Amazon.Lambda.Serialization.Json" Version="1.0.1" />
+    <PackageReference Include="FSharp.Core" Version="4.1.*" />
+    <PackageReference Include="System.Console" Version="4.3.0"/>
+    <PackageReference Include="FSharp.NET.Sdk" Version="1.0.*" PrivateAssets="All" />
+    <PackageReference Include="Newtonsoft.Json" Version="9.0.2-beta1" />
+    <PackageReference Include="TweetinviAPI" Version="1.2.0" />
+  </ItemGroup>
+</Project>
