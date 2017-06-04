@@ -23,7 +23,7 @@ type Generator = {
 }
 
 type TweetItems = {
-    FirstWords: string List
+    FirstWord: string
     Tuples: (Item*Item) List
 }
 
@@ -59,7 +59,6 @@ module Twitter =
             Tweetinvi.TweetinviConfig.CurrentThreadSettings.HttpRequestTimeout <- 60000 
             let tweets = Tweetinvi.Timeline.GetUserTimeline (username, parameters) |> List.ofSeq
             if not (List.isEmpty tweets) then
-                System.Console.WriteLine ((List.length tweets).ToString())
                 let minId = tweets |> List.map (fun (t:Models.ITweet) -> t.Id) |> List.min
                 let nextMaxId = minId - 1L
                 Some (tweets, Some nextMaxId)
@@ -67,7 +66,7 @@ module Twitter =
         Seq.unfold (getPartialTweets username) None
         |> List.concat
 
-module Process =
+module MarkovChain =
     let chooseRandom (choices:('a*int) list) =
         let dummy = choices |> List.head |> fst
         let total = choices |> List.sumBy snd
@@ -83,11 +82,27 @@ module Process =
     let removeSpecialCharacters (str:string) = 
         let sb = System.Text.StringBuilder()
         for c in str do
-            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c = '@' || c = ',' || c = '\'') then
+            if ((c >= 'A' && c <= 'Z') || 
+                (c >= 'a' && c <= 'z') || 
+                (c >= '0' && c <= '9') || 
+                c = '@' ||
+                c = ',' ||
+                c = '\'' ||
+                c = '.' ||
+                c = '!' ||
+                c = '?' ||
+                c = ';' ||
+                c = '&' ||
+                c = ':') then
                 sb.Append(c) |> ignore
             else ()
         sb.ToString()
 
+    let postProcess (str:string) =
+        str
+        |> (fun x -> Regex("[.]+").Replace(x,"."))
+        |> (fun x -> Regex("[wW]ensler").Replace(x,"Nolis"))
+        |> (fun x -> Regex("[aA]dler").Replace(x,"Nolis"))
     let removeReplies (s:string) =
         let rgx = Regex("@([0-9]|[a-z]|[A-Z]|_)+")
         s.Split(' ')
@@ -95,34 +110,30 @@ module Process =
         |> List.skipWhile (fun word -> rgx.IsMatch(word))
         |> (fun words ->
             if List.isEmpty words then "" else List.reduce (fun x y -> x + " " + y) words)
-    let convertTweetToTweetItem (tweet: Models.ITweet) =
+    let convertTweetToTweetItem (tweet: Models.ITweet) : TweetItems option =
         let text = 
             tweet.Text
+            |> System.Net.WebUtility.HtmlDecode
             |> removeReplies
-        let sentences = 
-            text.Split([|'.'|])
+        let words = 
+            text
+            |> (fun s -> Regex("http(s)?://([\w-]+.)+[\w-]+(/[\w- ./?%&=])?").Replace(s,""))
+            |> (fun x -> x.ToLower())
+            |> (fun t -> Regex.Split(t, "([.!?;:])"))
             |> List.ofArray
-        let sentenceTuples =
-            sentences
-            |> List.choose(fun sentence ->
-                    let words = 
-                        sentence
-                        |> (fun (s:string) -> s.Split())
-                        |> Array.toList
-                        |> List.map removeSpecialCharacters
-                        |> List.filter (System.String.IsNullOrWhiteSpace >> not)
-                    if List.isEmpty words then None else
-                    let tuples =
-                        if List.isEmpty words then List.Empty
-                        else
-                            words
-                            |> List.map Some
-                            |> List.pairwise
-                            |> (fun x -> List.append x (List.singleton (Some (List.last words),None)))
-                    let firstWord = tuples |> List.head |> fst |> Option.get
-                    Some (firstWord,tuples))
-        if List.isEmpty sentenceTuples then None
-        else Some {FirstWords = sentenceTuples |> List.map fst; Tuples = sentenceTuples |> List.collect snd}
+            |> List.collect (fun (s:string) -> Array.toList (s.Split()))
+            |> List.map removeSpecialCharacters
+            |> List.filter (System.String.IsNullOrWhiteSpace >> not)
+        if List.isEmpty words then None else
+        let tuples =
+            if List.isEmpty words then List.Empty
+            else
+                words
+                |> List.map Some
+                |> List.pairwise
+                |> (fun x -> List.append x (List.singleton (Some (List.last words),None)))
+        let firstWord = tuples |> List.head |> fst |> Option.get
+        Some {FirstWord = firstWord; Tuples = tuples}
 
     let convertTweetItemsToMarkovChain (tweetItems: TweetItems list) =
         let mc = 
@@ -144,8 +155,7 @@ module Process =
 
     let convertTweetItemsToFirstWords (tweetItems: TweetItems list) =
         tweetItems
-        |> List.collect (fun ti -> ti.FirstWords)
-        |> List.countBy id
+        |> List.countBy (fun ti -> ti.FirstWord)
         
 
     let convertTweetsToGenerator (tweets: Models.ITweet list) =
@@ -158,18 +168,33 @@ module Process =
             convertTweetItemsToFirstWords tweetItems
         {FirstWords = firstWords; MarkovChain = markovChain}
 
+    let chooseWordAndUpdateMarkovChain (word:string) (mc:MarkovChain) : (Item*MarkovChain) =
+        let wordsToChooseFrom = (Map.find word mc)
+        let nextWord = chooseRandom wordsToChooseFrom
+        let resultMC = 
+            if List.length wordsToChooseFrom > 1 then
+                let newWordsToChooseFrom =
+                    wordsToChooseFrom
+                    |> List.filter (fun (word,count) -> word <> nextWord)
+                mc.Remove(word).Add(word,newWordsToChooseFrom)
+            else mc
+        (nextWord, resultMC)
+
     let runMarkovChain (g:Generator) =
         let firstWord = chooseRandom g.FirstWords
-        List.unfold (fun w -> 
-                        let wordsToChooseFrom = (Map.find w g.MarkovChain)
-                        let nextWord = chooseRandom wordsToChooseFrom
+        List.unfold (fun (currentWords,currentMarkovChain) -> 
+                        let (nextWord,nextMarkovChain) = chooseWordAndUpdateMarkovChain (List.head currentWords) currentMarkovChain
                         match nextWord with
-                        | Some w -> Some (w,w)
-                        | None -> None) firstWord
-        |> (fun x -> List.append (List.singleton firstWord) x)
-        |> List.reduce (fun x y -> x + " " + y)
+                        | Some word -> Some (word,((word :: currentWords),nextMarkovChain))
+                        | None -> None) ((List.singleton firstWord),g.MarkovChain)
+        |> (fun x -> firstWord::x)
+        |> List.reduce (fun currentSentence nextWord -> 
+                if Regex.IsMatch(nextWord, "([.!?;:])") 
+                then  currentSentence + nextWord
+                else currentSentence + " " + nextWord)     
 
-module HeatherTweetGenerator =
+
+module LegacyHeatherTweetGenerator =
     type Amount =
         | Singular
         | Plural
@@ -222,7 +247,6 @@ module HeatherTweetGenerator =
         {Adjuster: Sentence -> Sentence;
          Weight: float;
         }
-
     let sentenceAdjusterProbability = 0.5
     let random = new System.Random()
     let negateEmotion (e: Emotion) =
@@ -239,7 +263,7 @@ module HeatherTweetGenerator =
         | StronglyPositive | Positive-> StronglyPositive
     let pick (s: (float*'t) seq) =
         let totalProbability =  s
-                                |> Seq.map (fun x -> System.Math.Exp(fst x))
+                                |> Seq.map (fst >> System.Math.Exp)
                                 |> Seq.sum
         let pick = random.NextDouble()*totalProbability
         s
@@ -249,7 +273,6 @@ module HeatherTweetGenerator =
         |> Seq.head
         |> snd
         |> snd
-        
     let allSingularCategories = [Object Singular; EObject Singular; Person Singular; Pet Singular; Location; Event] |> List.toSeq
     let allPluralCategories = [Object Plural; EObject Plural; Person Plural; Pet Plural] |> List.toSeq
     let allCategories = Seq.append allSingularCategories allPluralCategories
@@ -520,10 +543,6 @@ module HeatherTweetGenerator =
             ("does anyone have " +  (nWithAString (getNounWithFilters allEmotions [Object Plural])) + "? I need them for Gishwhes.",Neutral));
         Weight=0.7}
         {Generator=(fun () -> (("I am here for " + (nString (getNounWithFilters [Positive;StronglyPositive] [EObject Singular;Object Singular; EObject Plural; Object Plural]))+ ".",Positive)));Weight=1.0}
-        {Generator=(fun () -> 
-            let item = getAnyNoun()
-            (("holy crackers you wouldn't believe this post on " + (convertToTumblr item.String) + ".tumblr.com."),boostEmotion item.Emotion));
-        Weight=1.0}
         {Generator=(fun () -> (("I'm so tired of " + (nWithAString (getNounWithFilters [Negative;StronglyNegative] [EObject Singular;Object Singular; EObject Plural; Object Plural]))+ ".",Negative)));Weight=1.0}
         {Generator=(fun () -> (("I am done with " + (nWithAString (getNounWithFilters [Negative;StronglyNegative] [EObject Singular;Object Singular; EObject Plural; Object Plural]))+ ".",Negative)));Weight=1.0}
         {Generator=(fun () -> ((nWithAString (getNounWithFilters [Negative;StronglyNegative] [EObject Singular; EObject Plural]))+ " is a thing I am OVER.",StronglyNegative));Weight=1.0}
@@ -670,7 +689,6 @@ module HeatherTweetGenerator =
         //{Adjuster = (fun s -> {s with Generator = (fun () -> s.Generator() + " NICE.")}); Weight = 1.0}
         //{Adjuster = (fun s -> {s with Generator = (fun () -> s.Generator() + " CUTE.")}); Weight = 1.0}
         ]
-    //MAKE HEATHERBOT REPLY TO MESSAGES TO HER
     let capitalizeFirst (input:string) : string =
         if (System.String.IsNullOrEmpty(input)) then input
         else input.Substring(0,1).ToUpper() + input.Substring(1);
@@ -691,15 +709,21 @@ module HeatherTweetGenerator =
         |> (fun sentence -> sentence.Generator ())
         |> fst
         |> capitalizeFirst
-        
 
 module Program =
     [<EntryPoint>]
     let main argv = 
         do Twitter.setConfig "config.json" |> ignore
-        let tweets = Twitter.getTweets (argv.[0])
-        let generator = Process.convertTweetsToGenerator tweets
-        let tweet = Process.runMarkovChain generator
+        let r = System.Random()
+        let tweet = 
+            if r.NextDouble() < 1.0 then
+                let tweets = ["heatherklus";"machineheather"] |> List.collect Twitter.getTweets
+                tweets
+                |> MarkovChain.convertTweetsToGenerator 
+                |> MarkovChain.runMarkovChain
+                |> MarkovChain.postProcess
+            else 
+                LegacyHeatherTweetGenerator.runSentence()
         printfn "%s" tweet
         0 // return an integer exit code
 
