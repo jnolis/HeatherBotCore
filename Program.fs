@@ -5,6 +5,7 @@ open Newtonsoft.Json
 open System
 open System.IO
 open System.Text.RegularExpressions
+open Amazon.Lambda.Core
 
 type Config = {
     ConsumerKey: string
@@ -66,6 +67,10 @@ module Twitter =
         Seq.unfold (getPartialTweets username) None
         |> List.concat
 
+    let sendTweet (s:string) =
+        Tweetinvi.Tweet.PublishTweet s
+        |> ignore
+
 module MarkovChain =
     let chooseRandom (choices:('a*int) list) =
         let dummy = choices |> List.head |> fst
@@ -103,6 +108,9 @@ module MarkovChain =
         |> (fun x -> Regex("[.]+").Replace(x,"."))
         |> (fun x -> Regex("[wW]ensler").Replace(x,"Nolis"))
         |> (fun x -> Regex("[aA]dler").Replace(x,"Nolis"))
+        |> (fun (input:string) ->
+            if (System.String.IsNullOrEmpty(input)) then input
+            else input.Substring(0,1).ToUpper() + input.Substring(1))
     let removeReplies (s:string) =
         let rgx = Regex("@([0-9]|[a-z]|[A-Z]|_)+")
         s.Split(' ')
@@ -118,7 +126,6 @@ module MarkovChain =
         let words = 
             text
             |> (fun s -> Regex("http(s)?://([\w-]+.)+[\w-]+(/[\w- ./?%&=])?").Replace(s,""))
-            |> (fun x -> x.ToLower())
             |> (fun t -> Regex.Split(t, "([.!?;:])"))
             |> List.ofArray
             |> List.collect (fun (s:string) -> Array.toList (s.Split()))
@@ -710,20 +717,33 @@ module LegacyHeatherTweetGenerator =
         |> fst
         |> capitalizeFirst
 
+module Shared = 
+    let makeTweet () = 
+        if System.Random().NextDouble() < 0.3 then
+            let tweets = 
+                ["heatherklus";"machineheather"] 
+                |> List.sortBy (fun x -> 
+                    let r = System.Random()
+                    r.NextDouble())
+                |> List.truncate 500 
+                |> List.collect Twitter.getTweets
+            tweets
+            |> MarkovChain.convertTweetsToGenerator 
+            |> MarkovChain.runMarkovChain
+            |> MarkovChain.postProcess
+        else 
+            LegacyHeatherTweetGenerator.runSentence()
+module Lambda = 
+    let handler(context:ILambdaContext) =
+            do Twitter.setConfig "config.json" |> ignore
+            let tweet = Shared.makeTweet()
+            Twitter.sendTweet tweet
 module Program =
     [<EntryPoint>]
     let main argv = 
         do Twitter.setConfig "config.json" |> ignore
-        let r = System.Random()
-        let tweet = 
-            if r.NextDouble() < 1.0 then
-                let tweets = ["heatherklus";"machineheather"] |> List.collect Twitter.getTweets
-                tweets
-                |> MarkovChain.convertTweetsToGenerator 
-                |> MarkovChain.runMarkovChain
-                |> MarkovChain.postProcess
-            else 
-                LegacyHeatherTweetGenerator.runSentence()
+        let tweet = Shared.makeTweet()
+        Twitter.sendTweet tweet
         printfn "%s" tweet
         0 // return an integer exit code
 
